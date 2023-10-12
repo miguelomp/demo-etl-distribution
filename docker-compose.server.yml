@@ -1,0 +1,214 @@
+version: "3.7"
+
+name: server
+
+networks:
+  web_network:
+    external: true
+  tcp_network:
+    external: true
+
+volumes:
+  redpanda_volume: 
+    external: true
+  api_db_volume: 
+    external: true
+  api_venv_volume: 
+    external: true
+  certs_volume: 
+    external: true
+  airflow_volume: 
+    external: true
+  airflow_venv_volume: 
+    external: true
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    entrypoint: 
+      - "uvicorn"
+      - "api.main:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--root-path"
+      - "/pipeline/api"
+    ports:
+      - "8082:8000"
+    environment:
+      DB_DIR: /db
+    volumes:
+      - "api_db_volume:/db"
+      - "api_venv_volume:/opt/venv"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web_network"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.routers.api.rule=(PathPrefix(`/pipeline/api`) || Path(`/pipeline/api/docs`) || Path(`/pipeline/api/redoc`))"
+      - "traefik.http.routers.api.middlewares=api,admin-auth"
+      - "traefik.http.middlewares.api.stripPrefix.prefixes=/pipeline/api"
+      - "traefik.http.middlewares.api.stripPrefix.forceslash=true"
+    networks:
+      - web_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redpanda
+      - traefik
+
+  airflow:
+    volumes:
+      - airflow_venv_volume:/opt/venv
+      - airflow_volume:/home/airflow
+      - ./airflow:/home/dags
+    environment:
+      - AIRFLOW_HOME=/home/airflow
+      - AIRFLOW__CORE__DAGS_FOLDER=/home/dags
+      - AIRFLOW__CORE__TEST_CONNECTION=Enabled
+      - AIRFLOW__WEBSERVER__BASE_URL=http://localhost:8080/airflow
+      - AIRFLOW__WEBSERVER__WEB_SERVER_HOST=0.0.0.0
+      - AIRFLOW__WEBSERVER__WEB_SERVER_PORT=8080
+      - AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True
+      - AIRFLOW_VAR_AWS_ACCESS_KEY_ID=${AIRFLOW_VAR_AWS_ACCESS_KEY_ID?AIRFLOW_VAR_AWS_ACCESS_KEY_ID not set}
+      - AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY=${AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY?AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY not set}
+    env_file:
+      - .env
+    build: 
+      dockerfile: Dockerfile.airflow
+      context: .
+    command: ["airflow", "standalone"]
+    expose:
+      - 8080
+    networks:
+      - web_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web_network"
+      - "traefik.http.routers.airflow.entrypoints=websecure"
+      - "traefik.http.routers.airflow.tls=true"
+      - "traefik.http.routers.airflow.rule=PathPrefix(`/airflow`)"
+      - "traefik.http.routers.airflow.middlewares=admin-auth"
+  traefik:
+    image: traefik:v2.10
+    ports:
+      # The HTTP port
+      - "80:80"
+      - "443:443"
+      - "2222:2222"
+      # The Web UI (enabled by --api.insecure=true)
+      - "8081:8080"
+    command: 
+      --api
+      --providers.docker
+      --providers.docker.exposedbydefault=false
+      --entryPoints.web.address=:80
+      --entryPoints.websecure.address=:443
+
+      --log
+      --accesslog
+    labels:
+      # define an user:pass
+      - "traefik.http.middlewares.admin-auth.basicauth.users=admin:$$2y$$05$$nUMVlMsuDmUiMhqFi0sXNOUMCnjCnC2CGD0V4El6URXyls2B3RKcG"
+      # global redirect
+      - "traefik.http.routers.http_catchall.rule=HostRegexp(`{any:.+}`)"
+      - "traefik.http.routers.http_catchall.entrypoints=web"
+      - "traefik.http.routers.http_catchall.middlewares=https_redirect"
+      - "traefik.http.middlewares.https_redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https_redirect.redirectscheme.permanent=true"
+      # traedik dashboard
+      - "traefik.enable=true"
+      - "traefik.docker.network=web_network"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.rule=PathPrefix(`/traefik`)||PathPrefix(`/api`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=traefik,admin-auth"
+      - "traefik.http.middlewares.traefik.stripPrefix.prefixes=/traefik"
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock
+      - certs_volume:/etc/traefik/certs
+    networks:
+      - web_network
+      - tcp_network
+  redpanda:
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      # Address the broker advertises to clients that connect to the Kafka API.
+      # Use the internal addresses to connect to the Redpanda brokers'
+      # from inside the same Docker network.
+      # Use the external addresses to connect to the Redpanda brokers'
+      # from outside the Docker network.
+      - --advertise-kafka-addr internal://redpanda:9092,external://host.docker.internal:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      # Address the broker advertises to clients that connect to the HTTP Proxy.
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://host.docker.internal:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      # Redpanda brokers use the RPC API to communicate with eachother internally.
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      # Tells Seastar (the framework Redpanda uses under the hood) to use 1 core on the system.
+      - --smp 1
+      # The amount of memory to make available to Redpanda.
+      - --memory 1G
+      # Mode dev-container uses well-known configuration properties for development in containers.
+      - --mode dev-container
+      # enable logs for debugging.
+      - --default-log-level=debug
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.8
+    volumes:
+      - redpanda_volume:/var/lib/redpanda/data
+    networks:
+      - web_network
+      - tcp_network
+    ports:
+      - 18081:18081
+      - 18082:18082
+      - 19092:19092
+      - 19644:9644
+  console:
+    container_name: redpanda-console
+    image: docker.redpanda.com/redpandadata/console:v2.3.1
+    networks:
+      - web_network
+      - tcp_network
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+        server:
+          basePath: "/redpanda-console"
+          setBasePathFromXForwardedPrefix: true
+          stripPrefix: true
+    ports:
+      - 9080:8080
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web_network"
+      - "traefik.http.routers.redpanda-console.entrypoints=websecure"
+      - "traefik.http.routers.redpanda-console.tls=true"
+      - "traefik.http.routers.redpanda-console.rule=PathPrefix(`/redpanda-console`)"
+      - "traefik.http.routers.redpanda-console.middlewares=redpanda-console,admin-auth"
+      - "traefik.http.middlewares.redpanda-console.stripPrefix.prefixes=/redpanda-console"
+      - "traefik.http.middlewares.redpanda-console.stripPrefix.forceslash=true"
+    depends_on:
+      - redpanda
+      - traefik

@@ -1,0 +1,90 @@
+version: "3.8"
+
+name: python_services
+
+
+volumes:
+  venv_app_a: 
+    external: true
+
+services:
+  app_a_init:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    volumes:
+      - ./app_a:/home/app_a
+      - ./commons:/home/commons
+      - venv_app_a:/opt/venv
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --upgrade pip
+        find /home/** -name 'requirements.txt' -type f -exec readlink -f {} \; | xargs -I {} sh -c "pip install -r {}"
+  app_a_0:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    depends_on:
+      app_a_init:
+        condition: service_completed_successfully
+    environment:
+      - KAFKA_BROKER=host.docker.internal:19092
+      - CONSUMER_CLIENT_ID=node_1_clien_1_service_app_a
+      - CONSUMER_GROUP_ID=service_app_a
+      - CONSUMER_TOPIC=dbp-created-at
+      - PRODUCER_TOPIC=services-log
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET?AWS_S3_BUCKET not set}
+      - AWS_ACCESS_KEY_ID=${AIRFLOW_VAR_AWS_ACCESS_KEY_ID?AIRFLOW_VAR_AWS_ACCESS_KEY_ID not set}
+      - AWS_SECRET_ACCESS_KEY=${AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY?AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY not set}
+    env_file:
+      - .env
+    entrypoint: /bin/bash
+    command: 
+      - -c
+      - |
+        python -m app_a.src.app \
+          $${CONSUMER_CLIENT_ID} \
+          $${CONSUMER_GROUP_ID} \
+          $${KAFKA_BROKER} \
+          $${CONSUMER_TOPIC}
+    volumes:
+      - ./app_a:/home/app_a
+      - ./commons:/home/commons
+      - venv_app_a:/opt/venv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  app_a_1:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    depends_on:
+      app_a_init:
+        condition: service_completed_successfully
+    environment:
+      - KAFKA_BROKER=host.docker.internal:19092
+      - CONSUMER_CLIENT_ID=node_1_clien_2_service_app_a
+      - CONSUMER_GROUP_ID=service_app_a
+      - CONSUMER_TOPIC=dbp-created-at
+      - PRODUCER_TOPIC=services-log
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET?AWS_S3_BUCKET not set}
+      - AWS_ACCESS_KEY_ID=${AIRFLOW_VAR_AWS_ACCESS_KEY_ID?AIRFLOW_VAR_AWS_ACCESS_KEY_ID not set}
+      - AWS_SECRET_ACCESS_KEY=${AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY?AIRFLOW_VAR_AWS_SECRET_ACCESS_KEY not set}
+    env_file:
+      - .env
+    entrypoint: /bin/bash
+    command: 
+      - -c
+      - |
+        python -m app_a.src.app \
+          $${CONSUMER_CLIENT_ID} \
+          $${CONSUMER_GROUP_ID} \
+          $${KAFKA_BROKER} \
+          $${CONSUMER_TOPIC}
+    volumes:
+      - ./app_a:/home/app_a
+      - ./commons:/home/commons
+      - venv_app_a:/opt/venv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

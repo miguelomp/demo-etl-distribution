@@ -1,0 +1,11 @@
+ARG PYVER=3.11
+
+FROM python:$PYVER AS BUILDER
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONPATH="/home:$PYTHONPATH"
+
+WORKDIR /home
+
+CMD [ "tail", "-f", "/dev/null" ]

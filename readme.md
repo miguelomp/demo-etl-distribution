@@ -1,0 +1,1 @@
+[quick-start red-panda](https://docs.redpanda.com/current/develop/guide-python/)

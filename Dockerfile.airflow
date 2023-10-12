@@ -1,0 +1,9 @@
+ARG PYVER=3.11
+
+FROM python:$PYVER AS BUILDER
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip
+
+CMD [ "tail", "-f", "/dev/null" ]
